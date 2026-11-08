@@ -5,7 +5,7 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaLibraryService.LibraryParams
-import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService.LibraryResult
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
