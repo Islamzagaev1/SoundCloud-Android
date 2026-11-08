@@ -1,11 +1,5 @@
 package com.scd.android
 
-import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
-import androidx.media3.session.MediaLibraryService
-import androidx.media3.session.MediaLibraryService.MediaLibrarySession
-import androidx.media3.session.MediaLibraryService.LibraryParams
-import androidx.media3.session.MediaLibraryService.LibraryResult
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
@@ -20,6 +14,8 @@ import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.LibraryResult
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
@@ -265,15 +261,6 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
-        setListener(object : MediaSessionService.Listener {
-            override fun onForegroundServiceStartNotAllowedException() {
-                Logs.add(
-                    "player",
-                    "foreground start not allowed by system"
-                )
-            }
-        })
-
         Logs.add("player", "service ready")
     }
 
@@ -286,10 +273,7 @@ class PlaybackService : MediaLibraryService() {
         ): MediaSession.ConnectionResult {
 
             val builder =
-                MediaSession.ConnectionResult.AcceptedResultBuilder(
-                    session,
-                    controller
-                )
+                MediaSession.ConnectionResult.AcceptedResultBuilder(session)
 
             if (trusted(session, controller)) {
                 val cmds =
