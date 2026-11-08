@@ -1,3 +1,4 @@
+
 package com.scd.android
 
 import android.app.PendingIntent
@@ -12,7 +13,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
@@ -28,9 +30,9 @@ import kotlinx.coroutines.launch
 private const val CMD_LIKE = "com.scd.android.LIKE"
 private const val CMD_SHUFFLE = "com.scd.android.SHUFFLE"
 
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
 
-    private var mediaSession: MediaSession? = null
+    private var mediaSession: MediaLibrarySession? = null
     private var brain: PlayerBrain? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lastReportedUrn: String? = null
@@ -38,34 +40,54 @@ class PlaybackService : MediaSessionService() {
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+
         val local = androidx.media3.datasource.DefaultDataSource.Factory(this)
         val network =
-            androidx.media3.datasource.DefaultDataSource.Factory(this, ScDataSource.Factory(Api.http))
+            androidx.media3.datasource.DefaultDataSource.Factory(
+                this,
+                ScDataSource.Factory(Api.http)
+            )
 
-        val dataSourceFactory: androidx.media3.datasource.DataSource.Factory = runCatching {
-            val cache = MediaCache.get(this)
-            scope.launch { runCatching { MediaCache.prune() } }
-            val cached = androidx.media3.datasource.cache.CacheDataSource.Factory()
-                .setCache(cache)
-                .setUpstreamDataSourceFactory(network)
-                .setCacheKeyFactory { spec -> MediaCache.keyOf(spec.uri.toString()) }
-                .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-            prefetchFactory = cached
-            Logs.add("player", "media cache on")
-            RoutingDataSource.Factory(local, cached)
-        }.getOrElse { e ->
-            Logs.add("player", "media cache off: ${e.javaClass.simpleName}: ${e.message}")
-            RoutingDataSource.Factory(local, network)
-        }
-        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(60_000, 180_000, 1_500, 3_000)
-            .setBackBuffer(30_000, true)
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
+        val dataSourceFactory: androidx.media3.datasource.DataSource.Factory =
+            runCatching {
+                val cache = MediaCache.get(this)
+                scope.launch { runCatching { MediaCache.prune() } }
+
+                val cached =
+                    androidx.media3.datasource.cache.CacheDataSource.Factory()
+                        .setCache(cache)
+                        .setUpstreamDataSourceFactory(network)
+                        .setCacheKeyFactory { spec ->
+                            MediaCache.keyOf(spec.uri.toString())
+                        }
+                        .setFlags(
+                            androidx.media3.datasource.cache.CacheDataSource
+                                .FLAG_IGNORE_CACHE_ON_ERROR
+                        )
+
+                prefetchFactory = cached
+                Logs.add("player", "media cache on")
+                RoutingDataSource.Factory(local, cached)
+            }.getOrElse { e ->
+                Logs.add(
+                    "player",
+                    "media cache off: ${e.javaClass.simpleName}: ${e.message}"
+                )
+                RoutingDataSource.Factory(local, network)
+            }
+
+        val loadControl =
+            androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(60_000, 180_000, 1_500, 3_000)
+                .setBackBuffer(30_000, true)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build()
 
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(
-                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory),
+                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                    dataSourceFactory
+                )
             )
             .setLoadControl(loadControl)
             .setAudioAttributes(
@@ -73,7 +95,7 @@ class PlaybackService : MediaSessionService() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
-                true,
+                true
             )
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -83,22 +105,39 @@ class PlaybackService : MediaSessionService() {
             player.preloadConfiguration =
                 ExoPlayer.PreloadConfiguration(8_000_000L)
         }
+
         player.repeatMode = Prefs.repeatMode.coerceIn(0, 2)
-        ShuffleQueue.onChanged = { scope.launch(Dispatchers.Main) { updateCustomLayout() } }
+
+        ShuffleQueue.onChanged = {
+            scope.launch(Dispatchers.Main) {
+                updateCustomLayout()
+            }
+        }
 
         player.addListener(object : Player.Listener {
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+
+            override fun onMediaItemTransition(
+                mediaItem: MediaItem?,
+                reason: Int
+            ) {
                 reportListenEvent(mediaItem?.mediaId, reason)
                 historyJob?.cancel()
-                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) lastReportedUrn = null
+
+                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                    lastReportedUrn = null
+                }
+
                 updateCustomLayout()
+
                 if (player.isPlaying) {
                     watchForHistory(player)
                     prefetchNext(player)
                 }
             }
 
-            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            override fun onShuffleModeEnabledChanged(
+                shuffleModeEnabled: Boolean
+            ) {
                 if (shuffleModeEnabled) {
                     player.shuffleModeEnabled = false
                     ShuffleQueue.set(player, true)
@@ -122,31 +161,46 @@ class PlaybackService : MediaSessionService() {
                 } else {
                     historyJob?.cancel()
                     trackerJob?.cancel()
+
                     if (player.currentMediaItem?.mediaId == evUrn) {
                         evPos = player.currentPosition
                         evDur = player.duration.coerceAtLeast(0L)
                     }
                 }
+
                 updateCustomLayout()
             }
         })
 
-        brain = PlayerBrain(this, player, scope).also { it.start() }
+        brain = PlayerBrain(this, player, scope).also {
+            it.start()
+        }
 
         val openIntent = Intent(this, MainActivity::class.java).apply {
             putExtra("open_player", true)
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags =
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
+
         val pending = PendingIntent.getActivity(
-            this, 0, openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            this,
+            0,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                PendingIntent.FLAG_IMMUTABLE
         )
 
-        mediaSession = MediaSession.Builder(this, player)
+        mediaSession = MediaLibrarySession.Builder(
+            this,
+            player,
+            SessionCallback()
+        )
             .setSessionActivity(pending)
-            .setCallback(SessionCallback())
             .setBitmapLoader(
-                androidx.media3.session.CacheBitmapLoader(ScBitmapLoader(Api.http)),
+                androidx.media3.session.CacheBitmapLoader(
+                    ScBitmapLoader(Api.http)
+                )
             )
             .build()
 
@@ -156,55 +210,102 @@ class PlaybackService : MediaSessionService() {
                     .setNotificationId(1101)
                     .setChannelId("playback")
                     .build()
-                    .apply { setSmallIcon(R.drawable.ic_music) },
+                    .apply {
+                        setSmallIcon(R.drawable.ic_music)
+                    }
             )
         }
 
         updateCustomLayout()
+
         scope.launch(Dispatchers.Main) {
-            androidx.compose.runtime.snapshotFlow { Likes.urns }.collect { updateCustomLayout() }
+            androidx.compose.runtime.snapshotFlow {
+                Likes.urns
+            }.collect {
+                updateCustomLayout()
+            }
         }
+
         AudioFx.attach(player.audioSessionId)
+
         scope.launch(Dispatchers.Main) {
-            androidx.compose.runtime.snapshotFlow { Triple(Prefs.eqEnabled, Prefs.eqPreset, Prefs.eqBands) }
-                .collect { AudioFx.apply() }
+            androidx.compose.runtime.snapshotFlow {
+                Triple(Prefs.eqEnabled, Prefs.eqPreset, Prefs.eqBands)
+            }.collect {
+                AudioFx.apply()
+            }
         }
+
         fun route() {
             val device = AudioOutput.resolve(this)
-            runCatching { player.setPreferredAudioDevice(device) }
-                .onFailure { Logs.add("player", "output route failed: ${it.javaClass.simpleName}") }
+            runCatching {
+                player.setPreferredAudioDevice(device)
+            }.onFailure {
+                Logs.add(
+                    "player",
+                    "output route failed: ${it.javaClass.simpleName}"
+                )
+            }
         }
-        AudioOutput.watch(this) { route() }
+
+        AudioOutput.watch(this) {
+            route()
+        }
+
         scope.launch(Dispatchers.Main) {
-            androidx.compose.runtime.snapshotFlow { Prefs.audioOutput }.collect { route() }
+            androidx.compose.runtime.snapshotFlow {
+                Prefs.audioOutput
+            }.collect {
+                route()
+            }
         }
+
         setListener(object : MediaSessionService.Listener {
             override fun onForegroundServiceStartNotAllowedException() {
-                Logs.add("player", "foreground start not allowed by system")
+                Logs.add(
+                    "player",
+                    "foreground start not allowed by system"
+                )
             }
         })
+
         Logs.add("player", "service ready")
     }
 
-    private inner class SessionCallback : MediaSession.Callback {
+    private inner class SessionCallback : MediaLibrarySession.Callback {
+
         @OptIn(UnstableApi::class)
         override fun onConnect(
             session: MediaSession,
-            controller: MediaSession.ControllerInfo,
+            controller: MediaSession.ControllerInfo
         ): MediaSession.ConnectionResult {
-            val builder = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+
+            val builder =
+                MediaSession.ConnectionResult.AcceptedResultBuilder(
+                    session,
+                    controller
+                )
+
             if (trusted(session, controller)) {
-                val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
-                    .add(SessionCommand(CMD_LIKE, Bundle.EMPTY))
-                    .add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
-                    .build()
+                val cmds =
+                    MediaSession.ConnectionResult
+                        .DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+                        .buildUpon()
+                        .add(SessionCommand(CMD_LIKE, Bundle.EMPTY))
+                        .add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
+                        .build()
+
                 builder.setAvailableSessionCommands(cmds)
             }
+
             return builder.build()
         }
 
         @OptIn(UnstableApi::class)
-        private fun trusted(session: MediaSession, controller: MediaSession.ControllerInfo): Boolean =
+        private fun trusted(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): Boolean =
             controller.packageName == packageName ||
                 session.isMediaNotificationController(controller) ||
                 session.isAutoCompanionController(controller) ||
@@ -215,20 +316,28 @@ class PlaybackService : MediaSessionService() {
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
             customCommand: SessionCommand,
-            args: Bundle,
+            args: Bundle
         ): ListenableFuture<SessionResult> {
+
             if (!trusted(session, controller)) {
-                return Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
+                return Futures.immediateFuture(
+                    SessionResult(SessionError.ERROR_PERMISSION_DENIED)
+                )
             }
+
             when (customCommand.customAction) {
+
                 CMD_SHUFFLE -> {
                     scope.launch(Dispatchers.Main) {
                         ShuffleQueue.toggle(session.player)
                         updateCustomLayout()
                     }
                 }
+
                 CMD_LIKE -> {
-                    val track = session.player.currentMediaItem?.toTrackOrNull()
+                    val track =
+                        session.player.currentMediaItem?.toTrackOrNull()
+
                     if (track != null) {
                         scope.launch(Dispatchers.Main) {
                             Likes.toggle(track)
@@ -237,7 +346,51 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
             }
-            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+
+            return Futures.immediateFuture(
+                SessionResult(SessionResult.RESULT_SUCCESS)
+            )
+        }
+
+        @OptIn(UnstableApi::class)
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: LibraryParams?
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+
+            val root = MediaItem.Builder()
+                .setMediaId("soundcloud_root")
+                .setMediaMetadata(
+                    androidx.media3.common.MediaMetadata.Builder()
+                        .setIsBrowsable(true)
+                        .setIsPlayable(false)
+                        .setTitle("SoundCloud")
+                        .build()
+                )
+                .build()
+
+            return Futures.immediateFuture(
+                LibraryResult.ofItem(root, params)
+            )
+        }
+
+        @OptIn(UnstableApi::class)
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+
+            return Futures.immediateFuture(
+                LibraryResult.ofItemList(
+                    ImmutableList.of(),
+                    params
+                )
+            )
         }
     }
 
@@ -245,12 +398,27 @@ class PlaybackService : MediaSessionService() {
     private fun likeButton(): CommandButton {
         val urn = mediaSession?.player?.currentMediaItem?.mediaId
         val liked = urn != null && Likes.isLiked(urn)
+
         return CommandButton.Builder(
-            if (liked) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED,
+            if (liked) {
+                CommandButton.ICON_HEART_FILLED
+            } else {
+                CommandButton.ICON_HEART_UNFILLED
+            }
         )
-            .setDisplayName(getString(if (liked) R.string.notif_unlike else R.string.notif_like))
-            .setCustomIconResId(if (liked) R.drawable.ic_heart_filled else R.drawable.ic_heart)
-            .setSessionCommand(SessionCommand(CMD_LIKE, Bundle.EMPTY))
+            .setDisplayName(
+                getString(
+                    if (liked) R.string.notif_unlike
+                    else R.string.notif_like
+                )
+            )
+            .setCustomIconResId(
+                if (liked) R.drawable.ic_heart_filled
+                else R.drawable.ic_heart
+            )
+            .setSessionCommand(
+                SessionCommand(CMD_LIKE, Bundle.EMPTY)
+            )
             .setEnabled(true)
             .build()
     }
@@ -258,16 +426,29 @@ class PlaybackService : MediaSessionService() {
     @OptIn(UnstableApi::class)
     private fun shuffleButton(): CommandButton {
         val on = ShuffleQueue.active(mediaSession?.player)
+
         return CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-            .setDisplayName(getString(if (on) R.string.notif_shuffle_on else R.string.notif_shuffle))
-            .setCustomIconResId(if (on) R.drawable.ic_shuffle_on else R.drawable.ic_shuffle)
-            .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
+            .setDisplayName(
+                getString(
+                    if (on) R.string.notif_shuffle_on
+                    else R.string.notif_shuffle
+                )
+            )
+            .setCustomIconResId(
+                if (on) R.drawable.ic_shuffle_on
+                else R.drawable.ic_shuffle
+            )
+            .setSessionCommand(
+                SessionCommand(CMD_SHUFFLE, Bundle.EMPTY)
+            )
             .setEnabled(true)
             .build()
     }
 
     private fun updateCustomLayout() {
-        mediaSession?.setCustomLayout(ImmutableList.of(shuffleButton(), likeButton()))
+        mediaSession?.setCustomLayout(
+            ImmutableList.of(shuffleButton(), likeButton())
+        )
     }
 
     private var historyJob: kotlinx.coroutines.Job? = null
@@ -279,89 +460,152 @@ class PlaybackService : MediaSessionService() {
 
     private fun startTracker(player: Player) {
         trackerJob?.cancel()
+
         trackerJob = scope.launch(Dispatchers.Main) {
             while (true) {
                 val urn = player.currentMediaItem?.mediaId
+
                 if (urn != null && urn == evUrn) {
                     evPos = player.currentPosition
                     evDur = player.duration.coerceAtLeast(0L)
                 } else if (urn != null && evUrn == null) {
                     evUrn = urn
                 }
+
                 kotlinx.coroutines.delay(2_000)
             }
         }
     }
 
-    private fun reportListenEvent(nextUrn: String?, reason: Int) {
+    private fun reportListenEvent(
+        nextUrn: String?,
+        reason: Int
+    ) {
         val prev = evUrn
         val pos = evPos
         val dur = evDur
+
         evUrn = nextUrn
         evPos = 0L
         evDur = 0L
-        if (prev == null || prev == nextUrn && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) return
+
+        if (
+            prev == null ||
+            prev == nextUrn &&
+            reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
+        ) return
+
         if (!isScUrn(prev)) return
+
         when (reason) {
             Player.MEDIA_ITEM_TRANSITION_REASON_AUTO,
-            Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT -> Events.fullPlay(prev)
+            Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT ->
+                Events.fullPlay(prev)
+
             Player.MEDIA_ITEM_TRANSITION_REASON_SEEK -> {
                 if (dur <= 0L) return
+
                 val pct = pos.toDouble() / dur
-                if (pct >= 0.9) Events.fullPlay(prev) else Events.skip(prev, pct)
+
+                if (pct >= 0.9) {
+                    Events.fullPlay(prev)
+                } else {
+                    Events.skip(prev, pct)
+                }
             }
         }
     }
 
-    private var prefetchFactory: androidx.media3.datasource.cache.CacheDataSource.Factory? = null
+    private var prefetchFactory:
+        androidx.media3.datasource.cache.CacheDataSource.Factory? = null
+
     private var prefetchJob: kotlinx.coroutines.Job? = null
 
     @Volatile
-    private var prefetchWriter: androidx.media3.datasource.cache.CacheWriter? = null
+    private var prefetchWriter:
+        androidx.media3.datasource.cache.CacheWriter? = null
+
     private var prefetchedUrn: String? = null
 
     @OptIn(UnstableApi::class)
     private fun prefetchNext(player: Player) {
         val factory = prefetchFactory ?: return
+
         if (Prefs.offline) return
         if (Prefs.prefetchWifiOnly && NetMonitor.isMetered(this)) return
+
         val idx = player.nextMediaItemIndex
         if (idx == C.INDEX_UNSET) return
+
         val item = player.getMediaItemAt(idx)
         val urn = item.mediaId
-        if (urn.isEmpty() || urn == prefetchedUrn || Downloads.isDownloaded(urn)) return
+
+        if (
+            urn.isEmpty() ||
+            urn == prefetchedUrn ||
+            Downloads.isDownloaded(urn)
+        ) return
+
         val uri = item.localConfiguration?.uri ?: return
+
         if (uri.scheme != "http" && uri.scheme != "https") return
+
         prefetchJob?.cancel()
         prefetchWriter?.cancel()
         prefetchedUrn = urn
+
         prefetchJob = scope.launch {
             kotlinx.coroutines.delay(5_000)
-            val writer = androidx.media3.datasource.cache.CacheWriter(
-                factory.createDataSource(),
-                androidx.media3.datasource.DataSpec(uri),
-                null,
-                null,
-            )
+
+            val writer =
+                androidx.media3.datasource.cache.CacheWriter(
+                    factory.createDataSource(),
+                    androidx.media3.datasource.DataSpec(uri),
+                    null,
+                    null
+                )
+
             prefetchWriter = writer
             val started = System.currentTimeMillis()
-            runCatching { writer.cache() }
-                .onSuccess { Logs.add("player", "next track cached in ${(System.currentTimeMillis() - started) / 1000}s") }
-                .onFailure { if (it !is InterruptedException) prefetchedUrn = null }
+
+            runCatching {
+                writer.cache()
+            }.onSuccess {
+                Logs.add(
+                    "player",
+                    "next track cached in ${(System.currentTimeMillis() - started) / 1000}s"
+                )
+            }.onFailure {
+                if (it !is InterruptedException) {
+                    prefetchedUrn = null
+                }
+            }
+
             prefetchWriter = null
         }
     }
 
     private fun watchForHistory(player: Player) {
-        val urn = player.currentMediaItem?.mediaId?.takeIf { it.isNotEmpty() } ?: return
+        val urn = player.currentMediaItem
+            ?.mediaId
+            ?.takeIf { it.isNotEmpty() }
+            ?: return
+
         if (urn == lastReportedUrn || !isScUrn(urn)) return
+
         historyJob?.cancel()
+
         historyJob = scope.launch(Dispatchers.Main) {
             while (true) {
                 kotlinx.coroutines.delay(2_000)
-                if (player.currentMediaItem?.mediaId != urn) return@launch
+
+                if (player.currentMediaItem?.mediaId != urn) {
+                    return@launch
+                }
+
                 val pos = player.currentPosition
                 val dur = player.duration
+
                 if (pos >= 30_000L || (dur > 0L && pos >= dur / 2)) {
                     reportHistory(player.currentMediaItem)
                     return@launch
@@ -372,12 +616,17 @@ class PlaybackService : MediaSessionService() {
 
     private fun reportHistory(item: MediaItem?) {
         val mediaItem = item ?: return
-        val urn = mediaItem.mediaId.takeIf { it.isNotEmpty() } ?: return
+        val urn = mediaItem.mediaId
+            .takeIf { it.isNotEmpty() }
+            ?: return
+
         if (urn == lastReportedUrn) return
+
         lastReportedUrn = urn
 
         val md = mediaItem.mediaMetadata
         val title = md.title?.toString() ?: return
+
         scope.launch {
             runCatching {
                 Api.postHistory(
@@ -386,18 +635,24 @@ class PlaybackService : MediaSessionService() {
                     artistName = md.artist?.toString() ?: "",
                     artistUrn = md.extras?.getString("artist_urn"),
                     artworkUrl = md.extras?.getString("artwork_url"),
-                    duration = md.extras?.getLong("duration") ?: 0L,
+                    duration = md.extras?.getLong("duration") ?: 0L
                 )
             }
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
-        mediaSession
+    override fun onGetSession(
+        controllerInfo: MediaSession.ControllerInfo
+    ): MediaLibrarySession? = mediaSession
 
-    override fun onTaskRemoved(rootIntent: android.content.Intent?) {
+    override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
-        if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
+
+        if (
+            player == null ||
+            !player.playWhenReady ||
+            player.mediaItemCount == 0
+        ) {
             stopSelf()
         }
     }
@@ -406,13 +661,16 @@ class PlaybackService : MediaSessionService() {
         prefetchWriter?.cancel()
         brain?.stop()
         brain = null
+
         AudioFx.release()
         AudioOutput.unwatch(this)
         scope.cancel()
+
         mediaSession?.run {
             player.release()
             release()
         }
+
         mediaSession = null
         super.onDestroy()
     }
